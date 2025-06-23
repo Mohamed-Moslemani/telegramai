@@ -1,0 +1,9 @@
+env
+__pycache__
+.env
+yaml
+.yaml
+telegram_openai_assistant.egg-info
+/venv/
+LICENSE
+.md
