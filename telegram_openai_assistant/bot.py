@@ -1,73 +1,106 @@
+"""
+Telegram ⇆ OpenAI multi-bot runner
+Compatible with python-telegram-bot ≥ 20.0
+------------------------------------------------
+• Spins up one Application per (token, assistant_id) pair.
+• Uses BotHandlers for command / message handling.
+• No Updater — run_polling() is the async entry-point in v20+.
+"""
+
+from __future__ import annotations
+
 import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+import logging
+from typing import List
+
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+
 from .config import telegram_token_bots, assistant_id_bots
 from .handlers import BotHandlers
 
-class Bot:
-    def __init__(self, token: str, assistant_id: str):
-        """Initialize the bot application with a token and assistant_id"""
-        self.application = ApplicationBuilder().token(token).build()
-        self.assistant_id = assistant_id
-        self.handlers = BotHandlers(self.assistant_id, token)
-        self.setup_handlers()
 
-    def setup_handlers(self):
-        """Sets up the command and message handlers."""
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+
+class Bot:
+    """Single Telegram-OpenAI assistant bot instance."""
+
+    def __init__(self, token: str, assistant_id: str) -> None:
+        self.assistant_id = assistant_id
+        self.application: Application = ApplicationBuilder().token(token).build()
+        self.handlers = BotHandlers(assistant_id=assistant_id, telegram_token=token)
+        self._setup_handlers()
+
+    # ────── Internal helpers ──────────────────────────────────────────
+    def _setup_handlers(self) -> None:
+        """Plug slash commands & text dispatcher callbacks."""
         self.application.add_handler(CommandHandler("start", self.handlers.start))
         self.application.add_handler(CommandHandler("help", self.handlers.help_command))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.process_message))
+        self.application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.process_message)
+        )
 
-    async def send_message(self, message: str):
-        """Send a message to the specified chat_id"""
-        await self.application.bot.send_message(chat_id=self.chat_id, text=message)
-
-    async def start(self):
-        """Start the bot."""
+    # ────── Lifecycle API ─────────────────────────────────────────────
+    async def run(self) -> None:
+        """
+        Initialise ▸ start ▸ **block** polling until shutdown.
+        run_polling() wraps initialise/start/idle/shutdown internally.
+        """
+        # Set default bot commands (optional)
         await self.application.initialize()
-        await self.application.start()
-        await self.application.updater.start_polling()
+        await self.application.bot.set_my_commands(
+            [("start", "Start the bot"), ("help", "Show help")]
+        )
+        await self.application.shutdown()  # clean init run ended
 
-    async def stop(self):
-        """Stop the bot."""
-        await self.application.updater.stop()
+        # Now run full polling loop (does its own init/start/idle/shutdown)
+        await self.application.run_polling()
+
+    async def stop(self) -> None:
+        """Gracefully stop & shutdown (not usually needed, but exposed)."""
         await self.application.stop()
         await self.application.shutdown()
 
 
-async def start_bots():
-    """Runs all bot applications concurrently."""
-    bots = [
+# ──────────────────────────────────────────────────────────────────────
+# Multi-bot runner
+# ──────────────────────────────────────────────────────────────────────
+async def start_bots() -> None:
+    """
+    Spin up every (token, assistant_id) pair concurrently.
+    run_polling() blocks per bot, so we wrap each in a task.
+    """
+    bots: List[Bot] = [
         Bot(token, assistant_id)
         for token, assistant_id in zip(telegram_token_bots, assistant_id_bots)
     ]
-    
-    # Start all bots concurrently
-    start_tasks = [bot.start() for bot in bots]
-    await asyncio.gather(*start_tasks)
 
+    if not bots:
+        logger.error("No bots configured — check TELEGRAM_TOKEN_BOT / ASSISTANT_ID_BOT.")
+        return
+
+    logger.info("Launching %d bot(s)…", len(bots))
+    await asyncio.gather(*(bot.run() for bot in bots))
+
+
+def main() -> None:
+    """Entry-point for console-script `chatbot`."""
     try:
-        # Keep the event loop running until interrupted
-        while True:
-            await asyncio.sleep(1)
+        asyncio.run(start_bots())
     except KeyboardInterrupt:
-        print("Bots shutting down...")
-    finally:
-        # Stop polling for all bots
-        stop_tasks = [bot.application.updater.stop() for bot in bots]
-        await asyncio.gather(*stop_tasks)
-
-        # Stop all applications
-        stop_tasks = [bot.application.stop() for bot in bots]
-        await asyncio.gather(*stop_tasks)
-
-        # Shutdown all applications
-        shutdown_tasks = [bot.application.shutdown() for bot in bots]
-        await asyncio.gather(*shutdown_tasks)
-
-
-def main():
-    """Main function to run the bots."""
-    asyncio.run(start_bots())
+        # Ensures clean exit on Ctrl-C in local runs
+        logger.info("Shutdown requested by user. Exiting…")
 
 
 if __name__ == "__main__":
