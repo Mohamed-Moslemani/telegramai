@@ -39,7 +39,7 @@ class Bot:
     def __init__(self, token: str, assistant_id: str) -> None:
         self.assistant_id = assistant_id
         self.application: Application = ApplicationBuilder().token(token).build()
-        self.handlers = BotHandlers(assistant_id=assistant_id, telegram_token=token)
+        self.handlers = BotHandlers(assistant_id=assistant_id)
         self._setup_handlers()
 
     # ────── Internal helpers ──────────────────────────────────────────
